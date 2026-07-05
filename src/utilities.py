@@ -107,3 +107,66 @@ def physical_to_nondim(
         L_m               = L_m,
         residence_time_yr = residence_time_yr,
     )
+
+def nondim_to_physical(
+    Flush: float,
+    W_basal: float,
+    t_scale_yr: float,
+    L_m: float,
+    verbose: bool = True,
+) -> dict:
+    """
+    Translate nondimensional parameters used by SigmaAgeModel into physical
+    glaciological quantities.
+
+    Parameters
+    ----------
+    Flush : float
+        Flushing number (horizontal flux over vertical flux)
+    W_basal : float
+        Nondimensional basal vertical velocity
+    t_scale_yr : float
+        Physical duration of 1 nondim time unit  [yr]
+    L_m : float
+        Domain length used  [m]
+    verbose : bool
+        Print a formatted summary table.
+
+    Returns
+    -------
+    dict with keys:
+        u_surface_myr : Surface horizontal ice velocity  [m yr⁻¹]
+        H_m           : Mean ice thickness               [m]
+        a_myr         : Surface mass balance (accumulation rate)  [m yr⁻¹ ice equiv.]
+        w_basal_myr   : Basal freeze-on / melt rate  [m yr⁻¹]
+    """
+    # ── Derived scales ────────────────────────────────────────────────────────
+    H_m = t_scale_yr * abs(W_basal) / abs(W_basal)  # [m]  one nondim time unit
+    a_myr = H_m / t_scale_yr                         # [m yr⁻¹] accumulation rate
+    u_surface_myr = Flush * L_m * a_myr / H_m        # [m yr⁻¹] surface velocity
+    w_basal_myr = W_basal * a_myr                    # [m yr⁻¹] basal velocity
+
+    # ── Verbose summary ───────────────────────────────────────────────────────
+    if verbose:
+        sep = "─" * 54
+        print(f"\n{sep}")
+        print(f"  Nondimensional → Physical Parameter Translation")
+        print(sep)
+        print(f"  {'INPUT NONDIMENSIONAL PARAMETERS':}")
+        print(f"    Flush   = {Flush:>8.3f}")
+        print(f"    W_basal = {W_basal:>8.3f}")
+        print(f"    t_scale_yr = {t_scale_yr:>10.1f} yr")
+        print(f"    L_m       = {L_m:>10.2f} m")
+        print(f"\n  DERIVED PHYSICAL QUANTITIES")
+        print(f"    Surface velocity   u_s  = {u_surface_myr:>10.2f} m yr⁻¹")
+        print(f"    Ice thickness      H    = {H_m:>10.2f} m")
+        print(f"    Accumulation rate  a    = {a_myr:>10.4f} m yr⁻¹")
+        print(f"    Basal velocity     w_b  = {w_basal_myr:>10.4f} m yr⁻¹")
+        print(sep + "\n")
+
+    return dict(
+        u_surface_myr=u_surface_myr,
+        H_m=H_m,
+        a_myr=a_myr,
+        w_basal_myr=w_basal_myr,
+    )
