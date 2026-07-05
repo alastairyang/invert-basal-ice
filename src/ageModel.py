@@ -36,7 +36,7 @@ class SigmaAgeModel:
         without requiring the caller to tune anything.
     """
 
-    def __init__(self, nx=150, nz=100, Flush=1.0, bed_amp=0.08, cfl_safety=0.4):
+    def __init__(self, nx=150, nz=100, Flush=1.0, bed_amp=0.00, cfl_safety=0.4):
         self.nx         = nx
         self.nz         = nz
         self.Flush      = Flush

@@ -1,3 +1,5 @@
+import numpy as np
+
 def physical_to_nondim(
     u_surface_myr: float,
     H_m: float,
@@ -170,3 +172,55 @@ def nondim_to_physical(
         a_myr=a_myr,
         w_basal_myr=w_basal_myr,
     )
+
+def inverse_transform_geometry(X_grid, Z_grid, zs, zb, x_physical):
+    """ inverse transform the nondimensional age field to physical coordinates using surface and bed topography. 
+
+    Non-dimensional coordinates are defined as:
+        x_tilde  = x / L
+        zeta     = (z - b) / H          ∈ [0, 1]
+    where L is the horizontal length scale, H is the ice thickness, b is the bed topography, and z is the vertical coordinate.
+    We solve for physical coordinates (x, z) 
+    
+    Parameters
+    ----------
+    X_grid : 2D array
+        Nondimensional x grid of the age field.
+    Z_grid : 2D array
+        Nondimensional z grid of the age field.
+    zs : 1D array
+        Surface topography.
+    zb : 1D array
+        Bed topography.
+    x_physical: 1D array
+        Physical x coordinates (usually just along flow distance)
+    
+    Returns
+    -------
+    X_phys : 2D array
+        Physical x coordinates.
+    Z_phys : 2D array
+        Physical z coordinates.
+    """
+    import numpy as np
+    # Get the number of grid points
+    nx = X_grid.shape[1]
+    nz = Z_grid.shape[0]
+
+    # first interpolate zs and zb to the same grid resolution as X_grid and Z_grid
+    zs = np.interp(np.linspace(0, 1, nx), np.linspace(0, 1, len(zs)), zs)
+    zb = np.interp(np.linspace(0, 1, nx), np.linspace(0, 1, len(zb)), zb)
+
+    L = np.max(x_physical) - np.min(x_physical)  
+
+    # Initialize physical coordinates
+    X_phys = np.zeros_like(X_grid)
+    Z_phys = np.zeros_like(Z_grid)
+
+    # Loop over each x position to compute physical coordinates
+    for i in range(nx):
+        H = zs[i] - zb[i]  # Ice thickness at this x position
+        X_phys[:, i] = X_grid[:, i] * L  # Scale x by horizontal length scale
+        Z_phys[:, i] = Z_grid[:, i] * H + zb[i]  # Scale z by ice thickness and add bed topography
+
+    return X_phys, Z_phys
