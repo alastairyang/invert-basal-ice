@@ -97,7 +97,7 @@ class SigmaAgeModel:
     # ─────────────────────────────────────────────────────────────────────────
     def _build_velocity(self, w_basal=0.0):
         """
-        Lliboutry horizontal profile + incompressibility-derived sigma velocity.
+        Vertical vel profile + incompressibility-derived sigma velocity.
 
         Parameters
         ----------
@@ -108,7 +108,7 @@ class SigmaAgeModel:
         """
         ZZ = self.ZZ
 
-        # ── Lliboutry shape (p=3), normalised so omega(1)=1 ──────────────────
+        # ── Raymond shape (p=3), normalised so omega(1)=1 ──────────────────
         p      = 3.0
         omega  = ((p+2)/(p+1)) * (1 - (1-ZZ)**(p+1)) \
             - (1/(p+1))     * (1 - (1-ZZ)**(p+2))
