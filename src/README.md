@@ -18,9 +18,7 @@ $$u(x,z) = \frac{u_s H}{a L}w(x,z) $$
 
 > $$ u(x,z) = u_s(x,z) - \frac{2A(T,\phi)}{n+1}\left(\rho g \alpha \right)^n z^{n+1} $$
 
-> $$ w(x,z) = \int_b^s \frac{\partial u}{\partial x}dz $$
-
-> $$ w(x,s) = w_s $$
+> $$ w(z) - w(b) = \int_b^s \frac{\partial u}{\partial x}dz $$
 
 > where $A(T,\phi)$ is temperature- and impurity-dependent ice fluidity, $\alpha$ is surface slope. 
 
@@ -28,7 +26,7 @@ $$u(x,z) = \frac{u_s H}{a L}w(x,z) $$
 
 > $$\nabla \cdot \boldsymbol{\sigma} = \rho \boldsymbol{g}$$
 
-> where $\boldsymbol{\sigma} = [\sigma_{xx},\sigma_{xz}; \sigma_{zx}, \sigma_{zz}]$ and $\sigma_{ij} = p\boldsymbol{I}-\tau_{ij}$ and $\tau_{ij} = (\mu\epsilon_{ij})^{1/n}$. The most assumption that one can make is $\sigma_{xx}=0$ if we assume $\epsilon_{xx} = \frac{\partial u}{\partial x}=0$, leading to Blatter-Pattyn approximation (HO). 
+> where $\boldsymbol{\sigma} = [\sigma_{xx},\sigma_{xz}; \sigma_{zx}, \sigma_{zz}]$ and $\sigma_{ij} = p\boldsymbol{I}-\tau_{ij}$ and $\tau_{ij} = (\mu\epsilon_{ij})^{1/n}$. The most assumption that one can make is $\sigma_{xx}=0$ if we assume $\dot{\varepsilon}_{xx} = \frac{\partial u}{\partial x}=0$, leading to Blatter-Pattyn approximation (HO). In that case, we can just use Icepack to solve the englacial velocity field and then feed into the aging equation.
 
 
 # Non-dimensionalization 
