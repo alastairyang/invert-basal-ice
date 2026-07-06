@@ -9,19 +9,25 @@ $$X(s,t) = 0$$
 
 We assume the Raymond profile for the vertical velocity $w$
 
-$$w(x,z) = w_s\left\{1 - \frac{z}{H(x)}\left[\frac{n+2}{n+1} - \frac{1}{n+1}\left(\frac{z}{H(x)} \right)^{n+1}  \right] \right\}$$
+$$w(x,z) = w_s\left(1 - \frac{z}{H(x)}\left[\frac{n+2}{n+1} - \frac{1}{n+1}\left(\frac{z}{H(x)} \right)^{n+1}  \right] \right)$$
 where $n$ is Glen's flow law exponent and $w_s$ is vertical velocity at the ice surface. The horizontal velocity is modeled with a simple scaling argument
 
 $$u(x,z) = \frac{u_s H}{a L}w(x,z) $$
 
 > Theoretically, in areas of large thickness change (e.g. Eqip glacier), the Raymond velocity profile is no longer valid. Assuming $\frac{\partial w}{\partial x} =0$, we model the velocity field explicitly (Nye):
+
 > $$ u(x,z) = u_s(x,z) - \frac{2A(T,\phi)}{n+1}\left(\rho g \alpha \right)^n z^{n+1} $$
+
 > $$ w(x,z) = \int_b^s \frac{\partial u}{\partial x}dz $$
+
 > $$ w(x,s) = w_s $$
+
 > where $A(T,\phi)$ is temperature- and impurity-dependent ice fluidity, $\alpha$ is surface slope. 
 
 > As a matter of fact, when freeze-on or transient slip takes place, even $\frac{\partial w}{\partial x}=0$ is not a good assumption any more. One needs to solve the stokes-kind equation for the stress balance in the x-z plane: 
+
 > $$\nabla \cdot \boldsymbol{\sigma} = \rho \boldsymbol{g}$$
+
 > where $\boldsymbol{\sigma} = [\sigma_{xx},\sigma_{xz}; \sigma_{zx}, \sigma_{zz}]$ and $\sigma_{ij} = p\boldsymbol{I}-\tau_{ij}$ and $\tau_{ij} = (\mu\epsilon_{ij})^{1/n}$. The most assumption that one can make is $\sigma_{xx}=0$ if we assume $\epsilon_{xx} = \frac{\partial u}{\partial x}=0$, leading to Blatter-Pattyn approximation (HO). 
 
 
