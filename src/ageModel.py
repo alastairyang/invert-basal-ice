@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
 
 
 class SigmaAgeModel:
@@ -8,39 +9,68 @@ class SigmaAgeModel:
 
     PDE:  dX/dt + u_tilde * dX/dx + w_sigma * dX/dzeta = 1
 
-    Nondimensionalisation:
-        x_tilde = x / L
-        zeta    = (z - b(x)) / H(x)   in [0,1]
-        t_tilde = t * a / H
-        X_tilde = X * a / H
-        u_tilde = u / (L*a/H)  =>  u_tilde_max = Pe at surface
-        w_tilde = w_sigma / (a/H)
+    Nondimensionalisation
+    ---------------------
+    x_tilde  = x_phys / L
+    zeta     = (z - b(x)) / H(x)        in [0, 1]
+    t_tilde  = t_phys * a / H_mean
+    X_tilde  = X_phys * a / H_mean
+    u_tilde  = u_phys / (L * a / H_mean)
+    w_sigma  = w_phys_sigma / (a / H_mean)
 
-    Basal freeze-on perturbation:
-        w_basal(x, t) is a nondim upward velocity at zeta=0.
-        Positive values represent basal freeze-on (upward sigma velocity).
-        This is passed as a callable to run():
-            basal_perturbation(t) -> scalar or 1-D array of length nx
+    Bed kinematic condition
+    -----------------------
+    In physical coords:
+        w_phys(bed) = u_phys * db/dx + m_dot
+    where m_dot is the basal melt rate (positive = melt, negative = freeze-on).
 
-    BCs:
-        X = 0  at zeta = 1  (surface: fresh snow)
-        X = 0  at x = 0     (inflow divide: ice enters young)
-        dX/dx = 0 at x = 1  (outflow: zero-gradient, ice exits freely)
+    In sigma coords the bed-slope term (u * db/dx) is already absorbed into
+    the metric correction during the upward integration of incompressibility.
+    Therefore w_basal passed to _build_velocity() carries ONLY the melt/freeze
+    anomaly, nondimensionalised as:
+        w_basal_nd = m_dot / a_rate
 
-    CFL:
-        dt is recomputed after every velocity rebuild (_build_velocity).
-        The outer time loop advances by a fixed macro-step dt_macro, but
-        each macro-step is sub-divided into as many CFL-safe micro-steps
-        as required by the current velocity field.  This guarantees
-        stability under arbitrarily large or time-varying basal forcing
-        without requiring the caller to tune anything.
+    BCs
+    ---
+        X = 0  at zeta = 1          (surface: fresh snow)
+        X = 0  at x = 0  (Flush>0)  (inflow divide)
+        dX/dx = 0 at x = 1 (Flush>0)(outflow: zero-gradient)
+
+    Usage
+    -----
+    # From synthetic geometry (original behaviour):
+        model = SigmaAgeModel(nx=150, nz=100, Flush=1.0)
+
+    # From physical geometry arrays:
+        model = SigmaAgeModel.from_geometry(
+            x_phys, bed_phys, surface_phys,
+            nx=150, nz=100,
+            u_mean=100.0, a_rate=0.5, Flush=1.0
+        )
     """
 
-    def __init__(self, nx=150, nz=100, Flush=1.0, bed_amp=0.00, cfl_safety=0.4):
+    # ─────────────────────────────────────────────────────────────────────────
+    # Construction helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def __init__(self, nx=150, nz=100, Flush=1.0,
+                 bed_nd=None, surface_nd=None,
+                 bed_amp=0.0, cfl_safety=0.4):
+        """
+        Low-level constructor — works in nondimensional space.
+
+        Parameters
+        ----------
+        nx, nz      : grid resolution
+        Flush       : nondim horizontal flux scale (= Pe in some notations)
+        bed_nd      : (nx,) nondim bed elevation.     None → synthetic sine.
+        surface_nd  : (nx,) nondim surface elevation. None → 1 - 0.05*x.
+        bed_amp     : amplitude for synthetic bed (ignored if bed_nd given).
+        cfl_safety  : CFL safety factor.
+        """
         self.nx         = nx
         self.nz         = nz
         self.Flush      = Flush
-        self.bed_amp    = bed_amp
         self.cfl_safety = cfl_safety
 
         # ── Grid ──────────────────────────────────────────────────────────────
@@ -51,215 +81,246 @@ class SigmaAgeModel:
         self.XX, self.ZZ = np.meshgrid(self.x, self.zeta)   # (nz, nx)
 
         # ── Geometry ──────────────────────────────────────────────────────────
-        self.b_tilde = bed_amp * np.sin(2 * np.pi * self.x)
-        self.s_tilde = 1.0 - 0.05 * self.x
-        self.H_tilde = self.s_tilde - self.b_tilde
+        if bed_nd is not None:
+            self.b_tilde = np.asarray(bed_nd,     dtype=float)
+            self.s_tilde = np.asarray(surface_nd, dtype=float)
+        else:
+            self.b_tilde = bed_amp * np.sin(2 * np.pi * self.x)
+            self.s_tilde = 1.0 - 0.05 * self.x
+
+        self.H_tilde = self.s_tilde - self.b_tilde          # (nx,)
         self.dHdx    = np.gradient(self.H_tilde, self.x)
-        self.dbdx    = np.gradient(self.b_tilde,  self.x)
+        self.dbdx    = np.gradient(self.b_tilde,  self.x)   # ← bed slope (nd)
 
         # ── Velocity (unperturbed baseline) ───────────────────────────────────
         self._build_velocity(w_basal=0.0)
 
-        # ── Macro timestep: CFL from baseline velocity ────────────────────────
-        # dt_macro is the fixed outer step size used to advance "model time".
-        # It is set once from the unperturbed (smallest expected) flow so that
-        # the snapshot/verbose cadence is predictable.  During integration,
-        # each macro-step is sub-divided if the perturbed velocity demands it.
+        # ── Macro timestep ────────────────────────────────────────────────────
         self.dt_macro = self._cfl_dt()
+        self.dt       = self.dt_macro
         print(f"  Baseline CFL dt_macro = {self.dt_macro:.5f}  "
               f"(u_max={np.abs(self.u).max():.3f}, "
               f"w_max={np.abs(self.w).max():.4f})")
 
-        # Convenience alias so external code that reads model.dt still works
-        self.dt = self.dt_macro
-
-        # ── Age field ─────────────────────────────────────────────────────────
-        self.X = np.zeros((nz, nx))
-
-        # ── Diagnostic storage ────────────────────────────────────────────────
+        # ── Age field + diagnostics ───────────────────────────────────────────
+        self.X             = np.zeros((nz, nx))
         self.time_series   = []
         self.age_snapshots = []
 
     # ─────────────────────────────────────────────────────────────────────────
-    def _cfl_dt(self):
+    @classmethod
+    def from_geometry(cls, x_phys, bed_phys, surface_phys,
+                      nx=150, nz=100,
+                      u_mean=100.0, a_rate=0.5, Flush=1.0,
+                      cfl_safety=0.4):
         """
-        Compute the CFL-safe timestep from the *current* velocity field.
+        Construct a SigmaAgeModel from *physical* geometry arrays.
+
+        The physical arrays are resampled to nx points and nondimensionalised
+        before being passed to __init__.
+
+        Parameters
+        ----------
+        x_phys       : (N,) physical along-flow distance [m], ascending.
+        bed_phys     : (N,) bed elevation [m a.s.l.].
+        surface_phys : (N,) surface elevation [m a.s.l.].
+        nx           : number of horizontal grid points.
+        nz           : number of vertical sigma levels.
+        u_mean       : mean horizontal ice velocity [m/yr].
+        a_rate       : surface accumulation rate [m ice/yr].
+        Flush        : nondim flux scale  (= u_mean * H_mean / (L * a_rate)).
+                       If None, computed automatically from the geometry.
+        cfl_safety   : CFL safety factor.
 
         Returns
         -------
-        float
-            dt = cfl_safety * min(dx / u_max, dz / w_max)
+        SigmaAgeModel instance with physical metadata stored as attributes.
         """
+        x_phys       = np.asarray(x_phys,       dtype=float)
+        bed_phys     = np.asarray(bed_phys,      dtype=float)
+        surface_phys = np.asarray(surface_phys,  dtype=float)
+
+        # ── Resample to nx points ─────────────────────────────────────────────
+        xi = np.linspace(0, 1, nx)
+        t  = np.linspace(0, 1, len(x_phys))
+
+        x_rs  = interp1d(t, x_phys,       kind='linear')(xi)
+        b_rs  = interp1d(t, bed_phys,     kind='linear')(xi)
+        s_rs  = interp1d(t, surface_phys, kind='linear')(xi)
+
+        # ── Physical scales ───────────────────────────────────────────────────
+        L      = x_rs[-1] - x_rs[0]                    # domain length [m]
+        H_mean = np.mean(s_rs - b_rs)                  # mean thickness [m]
+
+        # Auto-compute Flush if not provided
+        if Flush is None:
+            Flush = u_mean * H_mean / (L * a_rate)
+            print(f"  Auto Flush = {Flush:.4f}  "
+                  f"(u={u_mean} m/yr, H={H_mean:.1f} m, "
+                  f"L={L:.1f} m, a={a_rate} m/yr)")
+
+        # ── Nondimensionalise geometry ────────────────────────────────────────
+        # x_nd in [0,1], bed and surface normalised by H_mean
+        # (so that H_nd ~ 1 on average, consistent with the PDE scaling)
+        b_nd = b_rs / H_mean
+        s_nd = s_rs / H_mean
+
+        # ── Build model ───────────────────────────────────────────────────────
+        obj = cls(nx=nx, nz=nz, Flush=Flush,
+                  bed_nd=b_nd, surface_nd=s_nd,
+                  cfl_safety=cfl_safety)
+
+        # ── Store physical metadata for plotting / age conversion ─────────────
+        obj.x_phys       = x_rs          # (nx,) m
+        obj.bed_phys     = b_rs          # (nx,) m
+        obj.surface_phys = s_rs          # (nx,) m
+        obj.L            = L             # m
+        obj.H_mean       = H_mean        # m
+        obj.u_mean       = u_mean        # m/yr
+        obj.a_rate       = a_rate        # m/yr
+        obj.has_geometry = True
+
+        return obj
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def _cfl_dt(self):
         u_max = np.abs(self.u).max()
-        w_max = np.abs(self.w).max() + 1e-12   # guard against zero
+        w_max = np.abs(self.w).max() + 1e-12
         return self.cfl_safety * min(self.dx / u_max, self.dz / w_max)
 
     # ─────────────────────────────────────────────────────────────────────────
     def _build_velocity(self, w_basal=0.0):
         """
-        Vertical vel profile + incompressibility-derived sigma velocity.
+        Build u and w_sigma from the Raymond velocity profile +
+        incompressibility, with an explicit bed kinematic condition.
+
+        Bed kinematic condition (sigma coords)
+        ---------------------------------------
+        In physical coords:
+            w_phys(bed) = u_phys * db_phys/dx  +  m_dot
+
+        Transforming to sigma:
+            w_sigma(zeta=0) = [ w_phys - (ZZ*dH/dx + db/dx)*u / H ] / H * H
+                            = m_dot / H_nd   (nondim)
+
+        The bed-slope term  u * db/dx  is handled by the metric correction
+        during upward integration of incompressibility.  Therefore:
+
+            w_basal (argument) = m_dot_nd = m_dot / a_rate
+
+        Positive w_basal → freeze-on (upward sigma velocity at bed).
+        Negative w_basal → melt      (downward sigma velocity at bed).
 
         Parameters
         ----------
-        w_basal : float or 1-D array of shape (nx,)
-            Nondimensional basal vertical velocity at zeta=0.
-            Positive = upward (freeze-on pushes ice upward in sigma coords).
-            Default 0.0 = no basal melt/freeze.
+        w_basal : float or (nx,) array
+            Nondim basal melt/freeze rate.  Bed-slope contribution is NOT
+            included here — it is already in the metric term.
         """
         ZZ = self.ZZ
 
-        # ── Raymond shape (p=3), normalised so omega(1)=1 ──────────────────
-        p      = 3.0
-        omega  = ((p+2)/(p+1)) * (1 - (1-ZZ)**(p+1)) \
-            - (1/(p+1))     * (1 - (1-ZZ)**(p+2))
+        # ── Raymond shape function (p=3) ──────────────────────────────────────
+        p     = 3.0
+        omega = ((p+2)/(p+1)) * (1 - (1-ZZ)**(p+1)) \
+              - (1/(p+1))     * (1 - (1-ZZ)**(p+2))
         omega /= omega[-1, 0]
 
-        # Horizontal velocity: u_tilde = Flush * omega(zeta)
         self.u = self.Flush * omega                              # (nz, nx)
 
-        # du/dx = 0 (parallel-flow assumption)
-        dudx_sigma = np.zeros_like(self.u)
+        # ── Incompressibility RHS in sigma coords ─────────────────────────────
+        # Full form:
+        #   dw/dzeta = -du/dx|_sigma + [(ZZ*dH/dx + db/dx)/H] * du/dzeta
+        #
+        # du/dx|_sigma = 0 under parallel-flow assumption
+        dudz    = np.gradient(self.u, self.zeta, axis=0)        # du/dzeta
+        dHdx_2d = self.dHdx[np.newaxis, :]                      # (1, nx)
+        dbdx_2d = self.dbdx[np.newaxis, :]                      # (1, nx)
+        H_2d    = self.H_tilde[np.newaxis, :]                   # (1, nx)
 
-        # Metric correction term
-        dudz    = np.gradient(self.u, self.zeta, axis=0)
-        dHdx_2d = self.dHdx[np.newaxis, :]
-        dbdx_2d = self.dbdx[np.newaxis, :]
-        H_2d    = self.H_tilde[np.newaxis, :]
-        metric  = (self.ZZ * dHdx_2d + dbdx_2d) / H_2d * dudz
+        # Metric: corrects for tilted sigma surfaces
+        metric   = (ZZ * dHdx_2d + dbdx_2d) / H_2d * dudz      # (nz, nx)
+        dwdz_rhs = metric                                        # du/dx|_sigma = 0
 
-        # ── Integrate w upward from bed ───────────────────────────────────────
+        # ── Bed kinematic BC ──────────────────────────────────────────────────
+        # w_sigma(zeta=0) = w_basal_nd (melt/freeze only; slope already in metric)
         w_bed = np.broadcast_to(
             np.atleast_1d(np.asarray(w_basal, dtype=float)),
             (self.nx,)
         ).copy()
 
-        dwdz_rhs    = -dudx_sigma + metric
+        # ── Upward integration from bed ───────────────────────────────────────
         self.w      = np.zeros_like(self.u)
         self.w[0,:] = w_bed
 
-        # Step 1: full upward integration using incompressibility RHS
         for k in range(1, self.nz):
             self.w[k, :] = self.w[k-1, :] + self.dz * dwdz_rhs[k-1, :]
 
-        # Step 2: capture raw integrated surface value AFTER the loop
-        w_top_raw = self.w[-1, :].copy()   # shape (nx,)
-
-        # Step 3: linear-in-zeta correction to honour both BCs exactly
-        #   zeta=0 : alpha=0 → no change        → w[0,:] = w_bed   ✓
-        #   zeta=1 : alpha=1 → adds(-1-w_top)   → w[-1,:]= -1      ✓
+        # ── Surface kinematic BC correction ───────────────────────────────────
+        # After integration, w[-1,:] will not exactly equal -1 due to
+        # discretisation error.  Apply a linear-in-zeta correction that:
+        #   - leaves w[0,:]  = w_bed  unchanged  (zeta=0, alpha=0)
+        #   - forces w[-1,:] = -1               (zeta=1, alpha=1)
+        w_top_raw = self.w[-1, :].copy()
         for k in range(self.nz):
             self.w[k, :] += self.zeta[k] * (-1.0 - w_top_raw)
 
-        # Explicit safety pin (should already be satisfied to machine precision)
-        self.w[-1, :] = -1.0
+        self.w[-1, :] = -1.0    # safety pin
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Everything below is unchanged from original
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _upwind_step(self, X):
-        """
-        First-order upwind advection + source term.
-        Handles both positive and negative Flush (u can be negative).
-        """
-        # ── Horizontal: split by sign of u ───────────────────────────────────
-        # u_neg uses forward  difference (upwind when flow is leftward)
-        # u_pos uses backward difference (upwind when flow is rightward)
         u_neg = np.minimum(self.u, 0.0)
         u_pos = np.maximum(self.u, 0.0)
 
-        fwd_x          = np.zeros_like(X)
-        fwd_x[:, :-1]  = (X[:, 1:] - X[:, :-1]) / self.dx   # forward in x
-        fwd_x[:, -1]   = 0.0
+        fwd_x         = np.zeros_like(X)
+        fwd_x[:, :-1] = (X[:, 1:] - X[:, :-1]) / self.dx
+        fwd_x[:, -1]  = 0.0
 
-        bwd_x          = np.zeros_like(X)
-        bwd_x[:, 1:]   = (X[:, 1:] - X[:, :-1]) / self.dx   # backward in x
-        bwd_x[:, 0]    = 0.0
+        bwd_x         = np.zeros_like(X)
+        bwd_x[:, 1:]  = (X[:, 1:] - X[:, :-1]) / self.dx
+        bwd_x[:, 0]   = 0.0
 
         dXdx = u_pos * bwd_x + u_neg * fwd_x
 
-        # ── Vertical: split by sign of w ─────────────────────────────────────
         w_neg = np.minimum(self.w, 0.0)
         w_pos = np.maximum(self.w, 0.0)
 
-        fwd_z          = np.zeros_like(X)
-        fwd_z[:-1, :]  = (X[1:, :] - X[:-1, :]) / self.dz
-        fwd_z[-1,  :]  = 0.0
+        fwd_z         = np.zeros_like(X)
+        fwd_z[:-1, :] = (X[1:, :] - X[:-1, :]) / self.dz
+        fwd_z[-1,  :] = 0.0
 
-        bwd_z          = np.zeros_like(X)
-        bwd_z[1:,  :]  = (X[1:, :] - X[:-1, :]) / self.dz
-        bwd_z[0,   :]  = 0.0
+        bwd_z         = np.zeros_like(X)
+        bwd_z[1:,  :] = (X[1:, :] - X[:-1, :]) / self.dz
+        bwd_z[0,   :] = 0.0
 
         dXdz = w_neg * fwd_z + w_pos * bwd_z
 
         return -dXdx - dXdz + 1.0
 
-
     def _apply_bcs(self, X):
-        """
-        Boundary conditions, aware of flow direction set by sign of Flush.
-
-        Flush > 0  (flow left → right):
-            inflow  at x = 0  → X = 0 (fresh ice enters)
-            outflow at x = 1  → zero-gradient
-        Flush < 0  (flow right → left):
-            inflow  at x = 1  → X = 0 (fresh ice enters)
-            outflow at x = 0  → zero-gradient
-        Flush = 0:
-            no horizontal transport; apply zero-gradient both sides
-        """
-        # Surface always fresh
         X[-1, :] = 0.0
-
         if self.Flush > 0:
-            X[:,  0]  = 0.0          # inflow at left
-            X[:, -1]  = X[:, -2]     # outflow at right
+            X[:,  0] = 0.0
+            X[:, -1] = X[:, -2]
         elif self.Flush < 0:
-            X[:, -1]  = 0.0          # inflow at right
-            X[:,  0]  = X[:,  1]     # outflow at left
+            X[:, -1] = 0.0
+            X[:,  0] = X[:,  1]
         else:
-            X[:,  0]  = X[:,  1]     # no flow: zero-gradient both sides
-            X[:, -1]  = X[:, -2]
-
+            X[:,  0] = X[:,  1]
+            X[:, -1] = X[:, -2]
         return np.maximum(X, 0.0)
 
-    # ─────────────────────────────────────────────────────────────────────────
     def _advance_one_macro_step(self, X, t, dt_macro, basal_perturbation):
-        """
-        Advance the age field by exactly dt_macro in physical time, using
-        as many CFL-safe micro-steps as the current velocity field requires.
-
-        The velocity is rebuilt once at the *start* of the macro-step and
-        held fixed for all micro-steps within it (operator-splitting style).
-        This is consistent with the assumption that w_basal varies on the
-        macro timescale, not the micro timescale.
-
-        Parameters
-        ----------
-        X : ndarray (nz, nx)
-            Age field at time t.
-        t : float
-            Current nondim time (start of macro-step).
-        dt_macro : float
-            Desired macro time increment.
-        basal_perturbation : callable or None
-
-        Returns
-        -------
-        X : ndarray (nz, nx)
-            Age field at time t + dt_macro.
-        n_sub : int
-            Number of micro-steps taken.
-        dt_micro : float
-            Micro-step size used.
-        """
-        # ── Rebuild velocity at start of macro-step ───────────────────────────
         if basal_perturbation is not None:
             wb = basal_perturbation(t)
             self._build_velocity(w_basal=wb)
 
-        # ── Compute CFL-safe micro-step for this velocity field ───────────────
-        dt_cfl  = self._cfl_dt()
-        n_sub   = max(1, int(np.ceil(dt_macro / dt_cfl)))
-        dt_micro = dt_macro / n_sub          # exact subdivision, sums to dt_macro
+        dt_cfl   = self._cfl_dt()
+        n_sub    = max(1, int(np.ceil(dt_macro / dt_cfl)))
+        dt_micro = dt_macro / n_sub
 
-        # ── Sub-step loop ─────────────────────────────────────────────────────
         for _ in range(n_sub):
             dX = self._upwind_step(X)
             X  = X + dt_micro * dX
@@ -267,65 +328,37 @@ class SigmaAgeModel:
 
         return X, n_sub, dt_micro
 
-    # ─────────────────────────────────────────────────────────────────────────
     def run(self, n_residence_times=6, basal_perturbation=None,
             snapshot_interval=None, verbose=True):
-        """
-        Integrate the age equation forward in time.
-
-        The outer loop advances by dt_macro (set at init from the baseline
-        CFL condition).  Each outer step calls _advance_one_macro_step(),
-        which internally sub-steps as many times as needed to satisfy the
-        CFL condition for the *current* (possibly perturbed) velocity field.
-
-        Parameters
-        ----------
-        n_residence_times : float
-            Total nondim integration time (in units of H/a).
-        basal_perturbation : callable or None
-            f(t) -> scalar or array(nx,)  giving w_basal at time t.
-            If None, velocity is built once and never updated.
-        snapshot_interval : int or None
-            Save X every this many *macro* steps.
-            None = save only the final state.
-        verbose : bool
-        """
         t_total  = float(n_residence_times)
         nt_macro = int(t_total / self.dt_macro)
+        X        = self._apply_bcs(self.X.copy())
 
-        X = self._apply_bcs(self.X.copy())
-
-        # For unperturbed case build velocity once up front
         if basal_perturbation is None:
             self._build_velocity(w_basal=0.0)
 
         print(f"  Running {nt_macro} macro-steps  "
-              f"(t_total={t_total:.1f} residence times, "
+              f"(t_total={t_total:.1f}, "
               f"perturbation={'ON' if basal_perturbation else 'OFF'})")
 
         self.time_series.clear()
         self.age_snapshots.clear()
-
-        max_sub_seen = 1   # track worst-case sub-stepping for diagnostics
+        max_sub_seen = 1
 
         for n in range(nt_macro):
             t = n * self.dt_macro
 
             if basal_perturbation is not None:
-                # Full adaptive sub-stepping path
                 X, n_sub, dt_micro = self._advance_one_macro_step(
-                    X, t, self.dt_macro, basal_perturbation
-                )
+                    X, t, self.dt_macro, basal_perturbation)
                 max_sub_seen = max(max_sub_seen, n_sub)
             else:
-                # Unperturbed: velocity fixed, single micro-step = macro-step
-                dX = self._upwind_step(X)
-                X  = X + self.dt_macro * dX
-                X  = self._apply_bcs(X)
+                dX       = self._upwind_step(X)
+                X        = X + self.dt_macro * dX
+                X        = self._apply_bcs(X)
                 n_sub    = 1
                 dt_micro = self.dt_macro
 
-            # ── Snapshots ─────────────────────────────────────────────────────
             if snapshot_interval and (n % snapshot_interval == 0):
                 self.time_series.append(t)
                 self.age_snapshots.append(X.copy())
@@ -335,21 +368,29 @@ class SigmaAgeModel:
                 wb_str = (f"{np.mean(wb_now):.3f}"
                           if hasattr(wb_now, '__len__') else f"{wb_now:.3f}")
                 print(f"    macro {n:6d}/{nt_macro}  t={t:.3f}  "
-                      f"w_basal={wb_str}  sub-steps={n_sub}  "
+                      f"w_basal={wb_str}  sub={n_sub}  "
                       f"dt_micro={dt_micro:.6f}  "
                       f"max(X)={X.max():.3f}  mean(X)={X.mean():.3f}")
 
         self.X = X
         self.time_series.append(nt_macro * self.dt_macro)
         self.age_snapshots.append(X.copy())
-
-        print(f"  Done.  Max sub-steps used in any macro-step: {max_sub_seen}  "
+        print(f"  Done.  Max sub-steps: {max_sub_seen}  "
               f"(dt_macro={self.dt_macro:.5f})")
         return X
 
     # ─────────────────────────────────────────────────────────────────────────
+    def age_years(self):
+        """
+        Convert nondim age field to physical years.
+        Requires model to have been built via from_geometry().
+        """
+        if not getattr(self, 'has_geometry', False):
+            raise AttributeError("age_years() requires from_geometry() construction.")
+        return self.X * self.H_mean / self.a_rate    # (nz, nx) years
+
+    # ─────────────────────────────────────────────────────────────────────────
     def plot(self, ax_row=None, fig=None, title_prefix=""):
-        """Plot age field, velocity field, and age-depth profiles."""
         own_fig = ax_row is None
         if own_fig:
             fig, axes = plt.subplots(1, 3, figsize=(16, 5))
@@ -358,7 +399,6 @@ class SigmaAgeModel:
 
         X = self.X
 
-        # ── Panel 1: Age field ────────────────────────────────────────────────
         ax   = axes[0]
         vmax = np.percentile(X, 98)
         cf   = ax.contourf(self.XX, self.ZZ, X,
@@ -376,7 +416,6 @@ class SigmaAgeModel:
         ax.set_title(f'{title_prefix}\nAge Field  (Flush={self.Flush:.1f})')
         ax.set_xlim(0, 1);  ax.set_ylim(0, 1)
 
-        # ── Panel 2: Horizontal velocity + quiver ─────────────────────────────
         ax  = axes[1]
         cf2 = ax.contourf(self.XX, self.ZZ, self.u, levels=40, cmap='viridis')
         plt.colorbar(cf2, ax=ax, label=r'$\tilde{u}$ (horiz)')
@@ -388,7 +427,6 @@ class SigmaAgeModel:
         ax.set_title('Velocity Field')
         ax.set_xlim(0, 1);  ax.set_ylim(0, 1)
 
-        # ── Panel 3: Age-depth profiles ───────────────────────────────────────
         ax   = axes[2]
         cols = ['royalblue', 'tomato', 'seagreen', 'darkorange']
         for col, pos in zip(cols, [0.25, 0.50, 0.75, 0.90]):
