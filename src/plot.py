@@ -8,6 +8,10 @@ class Plotter:
         self.FLUSH = FLUSH # flushing parameter
         self.u_surf = u_surf # surface velocity (m/a)
 
+        self._get_velocity_field()
+
+        # vel field: none by default
+
     def get_physical_coordinates(self, s, b, distance):
         """
         Load physical coordinates for plotting in the along-flow direction
@@ -27,7 +31,7 @@ class Plotter:
             self.model.XX, self.model.ZZ, self.s, self.b, self.distance
         )
         return
-
+    
     def physical_age_field(self):
         """
         Transform the non-dimensional age field to physical coordinates.
@@ -68,6 +72,12 @@ class Plotter:
         n_sample : int, optional
             Number of samples to take if forcing is 2D. Default is 5.
         """
+        if forcing is None:
+            self.forcing = np.zeros((self.model.nx,))  # default to zero forcing
+            self.forcing_time = None
+            print("No forcing data provided.")
+            return
+
         if forcing.ndim == 2:
             # take n_sample evenly spaced snapshots along time dimension
             n_sample = min(n_sample, forcing.shape[0])
@@ -87,6 +97,16 @@ class Plotter:
             print(f"Loaded a 1D forcing field.")
         return
     
+    def _get_velocity_field(self):
+        """
+        Get velocity field for quiver plot later.
+        """
+        if hasattr(self, 'model'):
+            self.u = self.model.u
+            self.w = self.model.w
+        return
+
+    
     def plot_age(self, flip_lr=False):
         if flip_lr: # depend on the flow direction and visual consistency
             dist_raw     = self.distance                        
@@ -94,6 +114,7 @@ class Plotter:
             X_phys     = np.fliplr(self.X_phys)                                  
             x_ph_contour = self.X_phys[0, :]                                        
             x_ph_contour = np.fliplr(x_ph_contour.reshape(1, -1)).ravel()   
+            u = -self.u
 
         if not hasattr(self, 'age_mask'):
             age_phys_masked = self._ice_mask_()
@@ -167,9 +188,18 @@ class Plotter:
         cbar_ax = fig.add_axes([0.84, 0.09, 0.02, 0.60])
         fig.colorbar(cf_ph, cax=cbar_ax, label='Age (years)')
 
+        # add a quiver plot for velocity
+        skip = (slice(None, None, 8), slice(None, None, 10))
+        ax_ph.quiver(X_phys[skip], self.Z_phys[skip],
+                     u[skip], self.w[skip] * 1,
+                     color='white', scale=30, width=0.003, alpha=0.8)
+        ax_ph.set_xlabel(r'$\tilde{x}$');  ax_ph.set_ylabel(r'$\zeta$')
+        ax_ph.set_title('Velocity Field')
+        # ax_ph.set_xlim(0, 1);  ax_ph.set_ylim(0, 1)
+
         # ─────────────────────────────────────────────────────────────────────────────
         # Top — perturbation bar
-        # ─────────────────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────────────────            
         if self.forcing.ndim == 1:
             n_forcing_tstep = 1
         else:
@@ -216,6 +246,8 @@ class Plotter:
 
         ax_wb.set_title('Basal perturbation', fontsize=9)
         plt.setp(ax_wb.get_xticklabels(), visible=False)
+
+
 
 
 # # ─────────────────────────────────────────────────────────────────────────────
