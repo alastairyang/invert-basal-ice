@@ -55,7 +55,7 @@ class SigmaAgeModel:
 
     def __init__(self, nx=150, nz=100, Flush=1.0,
                  bed_nd=None, surface_nd=None,
-                 bed_amp=0.0, cfl_safety=0.4):
+                 bed_amp=0.0, cfl_safety=0.4, n=3.0, shape_factor=1.0):
         """
         Low-level constructor — works in nondimensional space.
 
@@ -72,6 +72,8 @@ class SigmaAgeModel:
         self.nz         = nz
         self.Flush      = Flush
         self.cfl_safety = cfl_safety
+        self.n = n # glen's flow exponent
+        self.shape_factor = shape_factor
 
         # ── Grid ──────────────────────────────────────────────────────────────
         self.x    = np.linspace(0, 1, nx)
@@ -112,7 +114,7 @@ class SigmaAgeModel:
     def from_geometry(cls, x_phys, bed_phys, surface_phys,
                       nx=150, nz=100,
                       u_mean=100.0, a_rate=0.5, Flush=1.0,
-                      cfl_safety=0.4):
+                      cfl_safety=0.4, n=3.0, shape_factor = 1.0):
         """
         Construct a SigmaAgeModel from *physical* geometry arrays.
 
@@ -131,6 +133,8 @@ class SigmaAgeModel:
         Flush        : nondim flux scale  (= u_mean * H_mean / (L * a_rate)).
                        If None, computed automatically from the geometry.
         cfl_safety   : CFL safety factor.
+        n            : Glen's flow exponent (default 3.0).
+        shape_factor : shape factor for horizontal velocity profile
 
         Returns
         -------
@@ -159,6 +163,7 @@ class SigmaAgeModel:
                   f"(u={u_mean} m/yr, H={H_mean:.1f} m, "
                   f"L={L:.1f} m, a={a_rate} m/yr)")
 
+
         # ── Nondimensionalise geometry ────────────────────────────────────────
         # x_nd in [0,1], bed and surface normalised by H_mean
         # (so that H_nd ~ 1 on average, consistent with the PDE scaling)
@@ -168,7 +173,7 @@ class SigmaAgeModel:
         # ── Build model ───────────────────────────────────────────────────────
         obj = cls(nx=nx, nz=nz, Flush=Flush,
                   bed_nd=b_nd, surface_nd=s_nd,
-                  cfl_safety=cfl_safety)
+                  cfl_safety=cfl_safety, n=n)
 
         # ── Store physical metadata for plotting / age conversion ─────────────
         obj.x_phys       = x_rs          # (nx,) m
@@ -179,6 +184,9 @@ class SigmaAgeModel:
         obj.u_mean       = u_mean        # m/yr
         obj.a_rate       = a_rate        # m/yr
         obj.has_geometry = True
+        obj.Flush         = Flush
+        obj.n            = n
+        obj.shape_factor  = shape_factor
 
         return obj
 
@@ -219,13 +227,31 @@ class SigmaAgeModel:
         """
         ZZ = self.ZZ
 
-        # ── Raymond shape function (p=3) ──────────────────────────────────────
-        p     = 3.0
-        omega = ((p+2)/(p+1)) * (1 - (1-ZZ)**(p+1)) \
-              - (1/(p+1))     * (1 - (1-ZZ)**(p+2))
-        omega /= omega[-1, 0]
+        def raymond_profile_uniform(n, zeta):
+            """
+            Analytical Raymond profile for vertical velocity over depth
+            """
+            omega = ((n+2)/(n+1)) * (1 - (1-ZZ)**(n+1)) \
+              - (1/(n+1))     * (1 - (1-ZZ)**(n+2))
+            return omega / omega[-1, 0]
+        
+        def vertical_profile(n, zeta):
+            """
+            vertical velocity profile, accomodating depth-dependent 
+            Glen's flow parameter (n)
+            we have to solve numerically
 
-        self.u = self.Flush * omega                              # (nz, nx)
+            w_s - w_0 = -\frac{d u_s}{d x} \int_H^z [1 - (z/H)^{n+1}] dz
+
+
+            """
+            return
+
+        # ── Raymond shape function (n=3) ──────────────────────────────────────
+        omega = raymond_profile_uniform(self.n, self.zeta)
+        self.omega = omega
+
+        self.u = self.Flush * self.shape_factor * omega          # (nz, nx)
 
         # ── Incompressibility RHS in sigma coords ─────────────────────────────
         # Full form:
@@ -407,12 +433,13 @@ class SigmaAgeModel:
         cs   = ax.contour(self.XX, self.ZZ, X,
                           levels=np.linspace(0, vmax, 10),
                           colors='white', linewidths=0.6, alpha=0.7)
-        ax.clabel(cs, fmt='%.1f', fontsize=7, colors='white')
+        ax.clabel(cs, fmt='%.1f', fontsize=15, colors='white')
         plt.colorbar(cf, ax=ax, label=r'$\tilde{X} = Xa/H$')
         bed_norm = self.b_tilde / self.H_tilde
         ax.fill_between(self.x, 0, np.clip(bed_norm, -0.05, 0.05),
                         color='saddlebrown', alpha=0.5)
-        ax.set_xlabel(r'$\tilde{x}$');  ax.set_ylabel(r'$\zeta$')
+        ax.set_xlabel(r'$\tilde{x}$', fontsize=15);  
+        ax.set_ylabel(r'$\zeta$', fontsize=15)
         ax.set_title(f'{title_prefix}\nAge Field  (Flush={self.Flush:.1f})')
         ax.set_xlim(0, 1);  ax.set_ylim(0, 1)
 
@@ -433,10 +460,10 @@ class SigmaAgeModel:
             ix = int(pos * self.nx)
             ax.plot(X[:, ix], self.zeta, color=col, lw=2,
                     label=fr'$\tilde{{x}}={pos}$')
-        ax.set_xlabel(r'$\tilde{X} = Xa/H$')
-        ax.set_ylabel(r'$\zeta$  (0=bed, 1=surface)')
-        ax.set_title('Age–Depth Profiles')
-        ax.legend(fontsize=9);  ax.grid(True, alpha=0.3)
+        ax.set_xlabel(r'$\tilde{X} = Xa/H$', fontsize=15)
+        ax.set_ylabel(r'$\zeta$  (0=bed, 1=surface)', fontsize=15)
+        ax.set_title('Age–Depth Profiles', fontsize=15)
+        ax.legend(fontsize=15);  ax.grid(True, alpha=0.3)
         ax.set_ylim(0, 1)
 
         if own_fig:

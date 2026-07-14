@@ -67,7 +67,7 @@ class Plotter:
         Parameters
         ----------
         forcing : 1D or 2D array
-            The forcing data to be loaded.
+            The nondimensional forcing data to be loaded.
             If 2D, the first dimension is time and the second dimension is space.
         n_sample : int, optional
             Number of samples to take if forcing is 2D. Default is 5.
@@ -88,13 +88,15 @@ class Plotter:
             # convert time to physical time
             self.forcing_time = self.forcing_time / (self.adot_hat / self.H_hat)
 
-
             print(f"Loaded a 2D forcing field with {forcing.shape[0]} time steps. ")
             print(f"Sampling {n_sample} snapshots at indices: {indices}.")
         else:
             self.forcing      = forcing
             self.forcing_time = None
             print(f"Loaded a 1D forcing field.")
+
+        # forcing back to physical unit
+        self.forcing = self.forcing * self.adot_hat
         return
     
     def _get_velocity_field(self):
@@ -137,9 +139,10 @@ class Plotter:
         ax_ph = fig.add_subplot(gs[1, 0])
 
         fig.suptitle(
-            f"Age Field  |  Flush={self.FLUSH}  |  ",
-            fontsize=12, fontweight='bold'
+            rf"Age Field  |  $\phi_x / \phi_z$ = {self.FLUSH:.2f}  |  ",
+            fontsize=14, fontweight='bold'
         )
+
 
         # Rock below bed — brown fill between bottom of plot and bed profile
         ax_ph.fill_between(
@@ -169,9 +172,9 @@ class Plotter:
             color='white', alpha=1.0, zorder=3
         )
         ax_ph.set_facecolor('#8B6343')   # rock color for any remaining gaps
-        ax_ph.set_xlabel('Distance (m)')
-        ax_ph.set_ylabel('Elevation (m)')
-        ax_ph.legend(loc='lower right', fontsize=9)
+        ax_ph.set_xlabel('Distance (m)', fontsize=15)
+        ax_ph.set_ylabel('Elevation (m)', fontsize=15)
+        ax_ph.legend(loc='lower right', fontsize=15)
 
         x_min_f = x_ph_contour.min()
         x_max_f = x_ph_contour.max()
@@ -188,13 +191,12 @@ class Plotter:
         cbar_ax = fig.add_axes([0.84, 0.09, 0.02, 0.60])
         fig.colorbar(cf_ph, cax=cbar_ax, label='Age (years)')
 
-        # add a quiver plot for velocity
+        # -------- quiver plot for velocity -------------
         skip = (slice(None, None, 8), slice(None, None, 10))
         ax_ph.quiver(X_phys[skip], self.Z_phys[skip],
                      u[skip], self.w[skip] * 1,
-                     color='white', scale=30, width=0.003, alpha=0.8)
-        ax_ph.set_xlabel(r'$\tilde{x}$');  ax_ph.set_ylabel(r'$\zeta$')
-        ax_ph.set_title('Velocity Field')
+                     color='white', scale=25, width=0.0025, alpha=0.8)
+        ax_ph.set_xlabel(r'$x$ (m)', fontsize=15);  ax_ph.set_ylabel(r'$z$ (m)', fontsize=15)
         # ax_ph.set_xlim(0, 1);  ax_ph.set_ylim(0, 1)
 
         # ─────────────────────────────────────────────────────────────────────────────
@@ -230,21 +232,21 @@ class Plotter:
             )
 
         ax_wb.axhline(0, color='k', lw=0.8)
-        ax_wb.set_ylabel(r'$\tilde{w}_b$', fontsize=9)
-        ax_wb.tick_params(labelsize=8)
+        ax_wb.set_ylabel(r'$w_b$ (m/a)', fontsize=15)
+        ax_wb.tick_params(labelsize=15)
 
-        # Only add legend + colorbar if step count is manageable
-        if n_forcing_tstep <= 10:
-            ax_wb.legend(fontsize=7, loc='upper right', framealpha=0.6)
-        else:
-            # Add a colorbar to represent time progression
-            sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=n_forcing_tstep - 1))
-            sm.set_array([])
-            cbar = plt.colorbar(sm, ax=ax_wb, orientation='vertical', pad=0.02)
-            cbar.set_label('Time step', fontsize=8)
-            cbar.ax.tick_params(labelsize=7)
+        # # Only add legend + colorbar if step count is manageable
+        # if n_forcing_tstep <= 10:
+        #     ax_wb.legend(fontsize=12, loc='upper left', framealpha=0.6)
+        # else:
+        #     # Add a colorbar to represent time progression
+        #     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=n_forcing_tstep - 1))
+        #     sm.set_array([])
+        #     cbar = plt.colorbar(sm, ax=ax_wb, orientation='vertical', pad=0.02)
+        #     cbar.set_label('Time step', fontsize=12)
+        #     cbar.ax.tick_params(labelsize=15)
 
-        ax_wb.set_title('Basal perturbation', fontsize=9)
+        ax_wb.set_title('Basal perturbation', fontsize=12)
         plt.setp(ax_wb.get_xticklabels(), visible=False)
 
 
