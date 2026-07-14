@@ -84,6 +84,8 @@ $$\tilde{u}(\zeta) - \tilde{u}_s = \frac{H^2}{\mathcal{F}\hat{a}L}\int_1^\zeta 2
 
 $$\tilde{w}(\zeta) - \tilde{w}(0) = \mathcal{F}\int_0^\zeta \frac{\partial \tilde{u}}{\partial \tilde{x}}\, d\zeta'$$
 
+The integration is evaluated numerically with Gauss quadrature.
+
 
 # References
 Vieli et al., 2007. Three-dimensional flow influences on radar layer stratigraphy. Journal of Glaciology
